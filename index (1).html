@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monthly Close</title>
+<!--
+  MONTHLY CLOSE — a personal budgeting ritual. (Self-hosted version)
+
+  How this file is organised (top to bottom):
+    1. <head>  — fonts + all CSS (design tokens first, then components)
+    2. <body>  — the page skeleton; JS fills in the dynamic parts
+    3. <script> — state, rendering, and persistence (browser localStorage)
+
+  Data model (saved in THIS browser's localStorage — per device):
+    monthlyClose.settings       -> { income, taxRate, investGoal, categories: [...] }
+    monthlyClose.month.2026-09  -> { income, actuals: {catId: number}, invested, updatedAt }
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+/* ---------- 1. Design tokens ---------- */
+:root{
+  --paper:#F1F2EA;          /* pale green-tinted paper */
+  --ink:#1D2A22;            /* deep green-black */
+  --muted:rgba(29,42,34,.62);
+  --line:rgba(29,42,34,.16);
+  --track:rgba(29,42,34,.08);
+  --green:#23684B;          /* primary */
+  --gold:#C08A28;           /* the money you keep */
+  --over:#AC3A28;           /* over budget */
+  --field:#FFFFFF;
+  --seg-1:#2E6350; --seg-2:#557C3E; --seg-3:#7E8A38;
+  --seg-4:#38717C; --seg-5:#5D5E9C; --seg-6:#8A5B34;
+  --taxc:#847F70;           /* tax set-aside — not yours */
+  --serif:"Fraunces", Georgia, "Times New Roman", serif;
+  --sans:"Instrument Sans", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#121814; --ink:#E8ECE4; --muted:rgba(232,236,228,.62);
+    --line:rgba(232,236,228,.18); --track:rgba(232,236,228,.10);
+    --green:#57AB84; --gold:#DCAB4E; --over:#D9705B; --field:#1B231E;
+    --seg-1:#4E8D77; --seg-2:#7BA163; --seg-3:#A3AE5C;
+    --seg-4:#5F99A4; --seg-5:#8687C0; --seg-6:#B08557;
+    --taxc:#8E8A7E;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#121814; --ink:#E8ECE4; --muted:rgba(232,236,228,.62);
+  --line:rgba(232,236,228,.18); --track:rgba(232,236,228,.10);
+  --green:#57AB84; --gold:#DCAB4E; --over:#D9705B; --field:#1B231E;
+  --seg-1:#4E8D77; --seg-2:#7BA163; --seg-3:#A3AE5C;
+  --seg-4:#5F99A4; --seg-5:#8687C0; --seg-6:#B08557;
+  --taxc:#8E8A7E;
+}
+
+/* ---------- 2. Base ---------- */
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.5;
+  font-variant-numeric:tabular-nums;
+}
+main{max-width:680px; margin:0 auto; padding:28px 20px 80px}
+button{font:inherit; color:inherit; background:none; border:none; cursor:pointer; padding:0}
+input[type="number"], input[type="text"]{
+  font:inherit; color:var(--ink); background:var(--field);
+  border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+  font-variant-numeric:tabular-nums;
+}
+input[type="number"]{text-align:right}
+input:focus-visible, button:focus-visible{outline:2px solid var(--green); outline-offset:2px}
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none; margin:0}
+input[type=number]{-moz-appearance:textfield; appearance:textfield}
+h1,h2{font-family:var(--serif); font-weight:600; margin:0}
+hr{border:none; border-top:1px solid var(--line); margin:0}
+
+/* ---------- 3. Header / month nav ---------- */
+header{display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px}
+.wordmark{font-family:var(--serif); font-weight:700; font-size:17px; letter-spacing:.01em}
+.save-state{font-size:13px; color:var(--muted); min-width:60px; text-align:right; transition:opacity .4s}
+.save-state.on{color:var(--green)}
+.month-nav{display:flex; align-items:center; gap:4px; margin:26px 0 8px}
+.month-nav h1{font-size:clamp(30px, 6vw, 40px); line-height:1.1; flex:1}
+.month-nav .arrow{
+  width:38px; height:38px; border-radius:50%; font-size:20px; line-height:1;
+  display:grid; place-items:center; color:var(--muted);
+}
+.month-nav .arrow:hover{background:var(--track); color:var(--ink)}
+.storage-note{font-size:13px; color:var(--over); margin:4px 0 0; display:none}
+
+/* ---------- 4. Hero: the allocation bar ---------- */
+.hero{margin:22px 0 30px}
+.hero .big{
+  font-family:var(--serif); font-weight:700;
+  font-size:clamp(40px, 9vw, 58px); line-height:1.05; letter-spacing:-.01em;
+}
+.hero .big.gold{color:var(--gold)}
+.hero .big.bad{color:var(--over)}
+.hero .sub{color:var(--muted); font-size:15px; margin:6px 0 16px}
+.alloc{
+  height:46px; border-radius:12px; background:var(--track);
+  display:flex; overflow:hidden; position:relative;
+}
+.alloc .seg{height:100%; transition:width .45s cubic-bezier(.3,.9,.3,1); min-width:0}
+.alloc .seg.keep{background:var(--gold)}
+.legend{display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; font-size:13px; color:var(--muted)}
+.legend .dot{display:inline-block; width:9px; height:9px; border-radius:3px; margin-right:6px; vertical-align:-1px}
+
+/* ---------- 5. Category rows ---------- */
+.rows{margin-top:8px}
+.row{padding:16px 0; border-top:1px solid var(--line)}
+.row .top{display:flex; align-items:center; gap:12px}
+.row .name{flex:1; min-width:0}
+.row .name b{font-weight:600}
+.row .name .hint{display:block; font-size:13px; color:var(--muted)}
+.row .amount{display:flex; align-items:center; gap:6px}
+.row .amount .cur{color:var(--muted)}
+.row .tax-amt{font-weight:600; font-size:17px}
+.row input{width:96px; font-size:17px}
+.row .bar{height:9px; border-radius:5px; background:var(--track); margin-top:12px; overflow:hidden}
+.row .bar .fill{height:100%; border-radius:5px; width:0; transition:width .45s cubic-bezier(.3,.9,.3,1)}
+.row .status{font-size:13px; color:var(--muted); margin-top:6px; min-height:20px}
+.row .status .overtxt{color:var(--over); font-weight:500}
+.row.over .bar .fill{background:var(--over) !important}
+
+/* ---------- 6. Invest card ---------- */
+.invest{
+  border:1px solid var(--line); border-radius:14px; padding:18px;
+  margin-top:26px; background:color-mix(in srgb, var(--gold) 7%, transparent);
+}
+.invest h2{font-size:20px; margin-bottom:4px}
+.invest p{margin:0 0 14px; color:var(--muted); font-size:14px}
+.invest .controls{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.invest input{width:110px; font-size:17px}
+.btn{
+  background:var(--green); color:var(--paper); border-radius:9px;
+  padding:9px 14px; font-weight:600; font-size:14px;
+}
+.btn:hover{filter:brightness(1.08)}
+.btn.quiet{background:transparent; color:var(--green); border:1px solid var(--green)}
+
+/* ---------- 7. Investment pot ---------- */
+.history{margin-top:48px}
+.history h2{font-size:22px; margin-bottom:10px}
+.pot-num{font-family:var(--serif); font-weight:700; color:var(--gold);
+  font-size:clamp(34px, 7vw, 46px); line-height:1.05}
+.pot-sub{color:var(--muted); font-size:15px; margin:4px 0 14px}
+.pot-bar{height:28px; border-radius:9px; background:var(--track); overflow:hidden}
+.pot-fill{height:100%; width:0; background:var(--gold); border-radius:9px;
+  transition:width .6s cubic-bezier(.3,.9,.3,1)}
+.totals{color:var(--muted); font-size:13px; margin:10px 0 18px}
+.hist-row{display:flex; justify-content:space-between; align-items:baseline;
+  padding:9px 0; border-top:1px solid var(--line); font-size:14px}
+.hist-row .m{color:var(--muted)}
+.hist-row .inv{font-weight:600}
+.hist-row .inv.none{color:var(--muted); font-weight:400}
+.hist-empty{color:var(--muted); font-size:14px; padding:10px 0; border-top:1px solid var(--line)}
+
+/* ---------- 8. Settings ---------- */
+.settings-toggle{margin-top:40px; color:var(--muted); font-size:14px; text-decoration:underline; text-underline-offset:3px}
+.settings{display:none; margin-top:18px; border:1px solid var(--line); border-radius:14px; padding:18px}
+.settings.open{display:block}
+.settings h2{font-size:20px; margin-bottom:14px}
+.set-row{display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap}
+.set-row label{flex:1; min-width:130px}
+.set-row .wk{font-size:12px; color:var(--muted); width:90px}
+.set-row input[type="text"]{width:150px}
+.set-row input[type="number"]{width:96px}
+.set-row .del{color:var(--over); font-size:13px}
+.set-actions{margin-top:14px; display:flex; gap:10px; flex-wrap:wrap}
+
+@media (prefers-reduced-motion: reduce){
+  .alloc .seg, .row .bar .fill{transition:none}
+}
+@media (max-width:480px){
+  .row .top{flex-wrap:wrap}
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="wordmark">Monthly Close</span>
+    <span class="save-state" id="saveState"></span>
+  </header>
+  <hr>
+
+  <div class="month-nav">
+    <h1 id="monthTitle">—</h1>
+    <button class="arrow" id="prevMonth" aria-label="Previous month">‹</button>
+    <button class="arrow" id="nextMonth" aria-label="Next month">›</button>
+  </div>
+  <p class="storage-note" id="storageNote">Storage isn’t available in this view — figures will reset when you close the page.</p>
+
+  <section class="hero">
+    <div class="big gold" id="heroNum">£0</div>
+    <div class="sub" id="heroSub"></div>
+    <div class="alloc" id="allocBar" aria-hidden="true"></div>
+    <div class="legend" id="legend" aria-hidden="true"></div>
+  </section>
+
+  <section class="rows" id="moneyIn">
+    <div class="row">
+      <div class="top">
+        <div class="name"><b>Income this month</b><span class="hint">before tax · blank uses your usual figure</span></div>
+        <div class="amount"><span class="cur">£</span>
+          <input type="number" id="monthIncome" min="0" step="1" inputmode="decimal" aria-label="Income this month, before tax">
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="top">
+        <div class="name"><b>Tax set-aside</b><span class="hint" id="taxHint"></span></div>
+        <div class="amount tax-amt" id="taxAmt">£0</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rows" id="rows"></section>
+
+  <section class="invest">
+    <h2>Invest the rest</h2>
+    <p id="investHint"></p>
+    <div class="controls">
+      <button class="btn" id="investLeftover">Log leftover</button>
+      <span class="amount"><span class="cur">£</span>
+        <input type="number" id="investInput" min="0" step="1" inputmode="decimal" aria-label="Amount invested this month">
+      </span>
+    </div>
+  </section>
+
+  <section class="history">
+    <h2>Investment pot</h2>
+    <div class="pot-num" id="potNum">£0</div>
+    <div class="pot-sub" id="potSub">of £10,000</div>
+    <div class="pot-bar" aria-hidden="true"><div class="pot-fill" id="potFill"></div></div>
+    <p class="totals" id="totals"></p>
+    <div id="histRows"><p class="hist-empty">Log an invested amount above and it lands here.</p></div>
+  </section>
+
+  <button class="settings-toggle" id="settingsToggle">Edit income &amp; budgets</button>
+  <section class="settings" id="settings">
+    <h2>Your budget</h2>
+    <div class="set-row">
+      <label for="incomeInput">Usual monthly income (before tax)</label>
+      <span class="wk"></span>
+      <span class="amount"><span class="cur">£</span>
+        <input type="number" id="incomeInput" min="0" step="1" inputmode="decimal">
+      </span>
+    </div>
+    <div class="set-row">
+      <label for="taxRateInput">Tax rate</label>
+      <span class="wk"></span>
+      <span class="amount">
+        <input type="number" id="taxRateInput" min="0" max="100" step="0.5" inputmode="decimal">
+        <span class="cur">%</span>
+      </span>
+    </div>
+    <div class="set-row">
+      <label for="goalInput">Investment goal</label>
+      <span class="wk"></span>
+      <span class="amount"><span class="cur">£</span>
+        <input type="number" id="goalInput" min="0" step="100" inputmode="decimal">
+      </span>
+    </div>
+    <hr style="margin:14px 0">
+    <div id="catSettings"></div>
+    <div class="set-actions">
+      <button class="btn quiet" id="addCat">Add a category</button>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+/* =========================================================
+   1. Defaults & state
+   ========================================================= */
+const DEFAULT_SETTINGS = {
+  income: 3750,   // usual month's income BEFORE tax (£45k / 12)
+  taxRate: 20,    // % of each month's income set aside for tax
+  investGoal: 10000,
+  categories: [
+    { id: "rent",     name: "Rent",             target: 1250, perWeek: false },
+    { id: "food",     name: "Food",             target: 217,  perWeek: true  },
+    { id: "everyday", name: "Everyday things",  target: 433,  perWeek: true  },
+    { id: "drinks",   name: "Drinks & going out", target: 217, perWeek: true },
+    { id: "travel",   name: "Travel fund",      target: 173,  perWeek: true  },
+  ],
+};
+
+let settings = structuredClone(DEFAULT_SETTINGS);
+let monthKey = currentMonthKey();               // e.g. "2026-09"
+let month    = emptyMonth();                    // the month being edited
+let history  = [];                              // all saved month docs
+
+let monthDirty = false, settingsDirty = false;  // unsaved local changes?
+let monthTimer = null, settingsTimer = null;    // debounce timers
+
+const $ = (id) => document.getElementById(id);
+const gbp = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 });
+const SEG_VARS = ["--seg-1","--seg-2","--seg-3","--seg-4","--seg-5","--seg-6"];
+
+function emptyMonth() { return { income: null, actuals: {}, invested: null }; }
+function currentMonthKey() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+function monthLabel(key) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+}
+function shiftMonth(key, delta) {
+  const [y, m] = key.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+function catColor(i) { return `var(${SEG_VARS[i % SEG_VARS.length]})`; }
+function num(v) { const n = parseFloat(v); return Number.isFinite(n) && n >= 0 ? n : 0; }
+
+/* =========================================================
+   2. Rendering
+   ========================================================= */
+function allocated() {
+  return settings.categories.reduce((s, c) => s + num(month.actuals[c.id]), 0);
+}
+function monthIncome() { return month.income ?? settings.income ?? 0; }              // this month's gross
+function taxAmount()   { return Math.round(monthIncome() * (settings.taxRate || 0) / 100); }
+function leftoverNow() { return monthIncome() - taxAmount() - allocated(); }
+
+// Build the category rows (called when settings change — not on every keystroke,
+// so typing never rebuilds the input you're typing in).
+function buildRows() {
+  const rows = $("rows");
+  rows.innerHTML = "";
+  settings.categories.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.cat = c.id;
+    const weekly = Math.round(c.target * 12 / 52);
+    const hint = "budget " + gbp.format(c.target) + (c.perWeek ? ` · ${gbp.format(weekly)} a week` : "");
+    row.innerHTML = `
+      <div class="top">
+        <div class="name"><b></b><span class="hint">${hint}</span></div>
+        <div class="amount"><span class="cur">£</span>
+          <input type="number" min="0" step="1" inputmode="decimal" aria-label="Spent on ${c.name}">
+        </div>
+      </div>
+      <div class="bar"><div class="fill" style="background:${catColor(i)}"></div></div>
+      <div class="status"></div>`;
+    row.querySelector("b").textContent = c.name;
+    row.querySelector("input").addEventListener("input", (e) => {
+      month.actuals[c.id] = num(e.target.value);
+      refresh();
+      scheduleMonthSave();
+    });
+    rows.appendChild(row);
+  });
+
+  // hero legend
+  $("legend").innerHTML = `<span><span class="dot" style="background:var(--taxc)"></span>Tax</span>` +
+    settings.categories
+    .map((c, i) => `<span><span class="dot" style="background:${catColor(i)}"></span>${c.name}</span>`)
+    .join("") + `<span><span class="dot" style="background:var(--gold)"></span>Yours to keep</span>`;
+
+  buildSettingsPanel();
+  syncInputs();
+  refresh();
+}
+
+// Push current month values into the inputs (after loading a month).
+function syncInputs() {
+  document.querySelectorAll("#rows .row").forEach((row) => {
+    const v = month.actuals[row.dataset.cat];
+    row.querySelector("input").value = v ? v : "";
+  });
+  $("investInput").value = month.invested ?? "";
+  $("monthIncome").value = month.income ?? "";
+  $("monthIncome").placeholder = settings.income || 0;
+  $("incomeInput").value = settings.income;
+  $("taxRateInput").value = settings.taxRate ?? 20;
+  $("goalInput").value = settings.investGoal || 10000;
+}
+
+// Update numbers and bar widths (cheap — safe to run on every keystroke).
+function refresh() {
+  const inc = monthIncome();
+  const tax = taxAmount();
+  const spent = allocated();
+  const leftover = inc - tax - spent;
+
+  $("monthTitle").textContent = monthLabel(monthKey);
+
+  // tax line — calculated, never typed
+  $("taxAmt").textContent = gbp.format(tax);
+  $("taxHint").textContent = `${settings.taxRate || 0}% of ${gbp.format(inc)} — move it aside on payday`;
+  $("monthIncome").placeholder = settings.income || 0;
+
+  // hero number
+  const heroNum = $("heroNum");
+  if (leftover >= 0) {
+    heroNum.textContent = gbp.format(leftover);
+    heroNum.className = "big gold";
+    $("heroSub").textContent = `yours to keep, of ${gbp.format(inc)} in · ${gbp.format(tax)} to tax`;
+  } else {
+    heroNum.textContent = gbp.format(-leftover) + " short";
+    heroNum.className = "big bad";
+    $("heroSub").textContent = `spending plus tax exceeds your ${gbp.format(inc)} income`;
+  }
+
+  // hero allocation bar — tax first, then categories, gold remainder
+  const bar = $("allocBar");
+  bar.innerHTML = "";
+  const denom = Math.max(inc, tax + spent, 1);
+  if (tax > 0) {
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    seg.style.background = "var(--taxc)";
+    seg.style.width = (tax / denom * 100) + "%";
+    seg.title = `Tax: ${gbp.format(tax)}`;
+    bar.appendChild(seg);
+  }
+  settings.categories.forEach((c, i) => {
+    const v = num(month.actuals[c.id]);
+    if (v <= 0) return;
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    seg.style.background = catColor(i);
+    seg.style.width = (v / denom * 100) + "%";
+    seg.title = `${c.name}: ${gbp.format(v)}`;
+    bar.appendChild(seg);
+  });
+  if (leftover > 0) {
+    const keep = document.createElement("div");
+    keep.className = "seg keep";
+    keep.style.width = (leftover / denom * 100) + "%";
+    keep.title = `Yours to keep: ${gbp.format(leftover)}`;
+    bar.appendChild(keep);
+  }
+
+  // category bars + status lines
+  document.querySelectorAll("#rows .row").forEach((row) => {
+    const c = settings.categories.find((x) => x.id === row.dataset.cat);
+    if (!c) return;
+    const v = num(month.actuals[c.id]);
+    const pct = c.target > 0 ? Math.min(v / c.target, 1) * 100 : 0;
+    row.querySelector(".fill").style.width = pct + "%";
+    const status = row.querySelector(".status");
+    const diff = c.target - v;
+    row.classList.toggle("over", diff < 0);
+    if (v === 0)      status.textContent = "";
+    else if (diff > 0) status.textContent = gbp.format(diff) + " left";
+    else if (diff === 0) status.textContent = "right on budget";
+    else status.innerHTML = `<span class="overtxt">${gbp.format(-diff)} over</span>`;
+  });
+
+  // invest card
+  $("investHint").textContent = leftover > 0
+    ? `You have ${gbp.format(leftover)} unspent this month.`
+    : `Nothing left over this month.`;
+  $("investLeftover").textContent = leftover > 0 ? `Log ${gbp.format(leftover)} as invested` : "Log leftover";
+  $("investLeftover").disabled = leftover <= 0;
+}
+
+/* ---------- Investment pot ---------- */
+function renderHistory() {
+  const goal = settings.investGoal || 10000;
+  const docs = history.filter((d) => d.data && (num(d.data.invested) > 0 || Object.keys(d.data.actuals || {}).length));
+  let invTotal = 0, travelTotal = 0;
+  docs.forEach((d) => {
+    invTotal += num(d.data.invested);
+    travelTotal += num((d.data.actuals || {}).travel);
+  });
+
+  // The pot: everything ever logged as invested, filling toward the goal.
+  $("potNum").textContent = gbp.format(invTotal);
+  $("potFill").style.width = Math.min(invTotal / Math.max(goal, 1), 1) * 100 + "%";
+  $("potSub").textContent = invTotal >= goal
+    ? `${gbp.format(goal)} goal reached` + (invTotal > goal ? ` · ${gbp.format(invTotal - goal)} beyond it` : "")
+    : `of ${gbp.format(goal)} · ${Math.round(invTotal / Math.max(goal, 1) * 100)}%`;
+  $("totals").textContent = travelTotal > 0 ? `Travel pot so far: ${gbp.format(travelTotal)}` : "";
+
+  const holder = $("histRows");
+  if (!docs.length) {
+    holder.innerHTML = `<p class="hist-empty">Log an invested amount above and it lands here.</p>`;
+    return;
+  }
+  holder.innerHTML = "";
+  [...docs].reverse().forEach((d) => {           // newest first
+    const inv = num(d.data.invested);
+    const row = document.createElement("div");
+    row.className = "hist-row";
+    row.innerHTML = `<span class="m">${monthLabel(d.id)}</span>
+      <span class="inv ${inv ? "" : "none"}">${inv ? "+ " + gbp.format(inv) : "nothing logged"}</span>`;
+    holder.appendChild(row);
+  });
+}
+
+/* ---------- Settings panel ---------- */
+function buildSettingsPanel() {
+  const holder = $("catSettings");
+  holder.innerHTML = "";
+  settings.categories.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "set-row";
+    const weekly = Math.round(c.target * 12 / 52);
+    row.innerHTML = `
+      <input type="text" value="" aria-label="Category name">
+      <span class="wk">≈ ${gbp.format(weekly)}/wk</span>
+      <span class="amount"><span class="cur">£</span>
+        <input type="number" min="0" step="1" inputmode="decimal" value="${c.target}" aria-label="Monthly budget for ${c.name}">
+      </span>
+      <button class="del">remove</button>`;
+    const [nameIn] = row.querySelectorAll("input[type=text]");
+    nameIn.value = c.name;
+    nameIn.addEventListener("input", (e) => { c.name = e.target.value; scheduleSettingsSave(); buildRowsSoon(); });
+    row.querySelector("input[type=number]").addEventListener("input", (e) => {
+      c.target = num(e.target.value);
+      row.querySelector(".wk").textContent = "≈ " + gbp.format(Math.round(c.target * 12 / 52)) + "/wk";
+      scheduleSettingsSave(); buildRowsSoon();
+    });
+    row.querySelector(".del").addEventListener("click", () => {
+      settings.categories = settings.categories.filter((x) => x.id !== c.id);
+      scheduleSettingsSave(); buildRows();
+    });
+    holder.appendChild(row);
+  });
+}
+
+// Rebuilding rows mid-keystroke would steal focus from the settings inputs,
+// so rebuild shortly after typing pauses instead.
+let rebuildTimer = null;
+function buildRowsSoon() {
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(() => { const open = $("settings").classList.contains("open");
+    buildRows(); if (open) $("settings").classList.add("open"); }, 900);
+}
+
+/* =========================================================
+   3. Persistence (localStorage — data lives in this browser)
+   ========================================================= */
+const STORE = "monthlyClose.";   // every key we own starts with this
+
+function storageAvailable() {
+  try { localStorage.setItem(STORE + "t", "1"); localStorage.removeItem(STORE + "t"); return true; }
+  catch (e) { return false; }    // e.g. some private-browsing modes
+}
+const canStore = storageAvailable();
+
+function setSaveState(text, good) {
+  const el = $("saveState");
+  el.textContent = text;
+  el.classList.toggle("on", !!good);
+  if (good) setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, 2500);
+}
+
+function scheduleMonthSave() {
+  monthDirty = true;
+  clearTimeout(monthTimer);
+  monthTimer = setTimeout(flushMonthSave, 800);
+}
+function flushMonthSave() {
+  if (!monthDirty) return;
+  monthDirty = false;
+  if (!canStore) return;
+  try {
+    const body = { income: month.income, actuals: { ...month.actuals }, invested: month.invested, updatedAt: new Date().toISOString() };
+    localStorage.setItem(STORE + "month." + monthKey, JSON.stringify(body));
+    setSaveState("Saved", true);
+    loadHistory();                                  // keep the pot up to date
+  } catch (e) { monthDirty = true; setSaveState("Couldn’t save"); }
+}
+
+function scheduleSettingsSave() {
+  settingsDirty = true;
+  clearTimeout(settingsTimer);
+  settingsTimer = setTimeout(flushSettingsSave, 800);
+}
+function flushSettingsSave() {
+  if (!settingsDirty) return;
+  settingsDirty = false;
+  if (!canStore) return;
+  try {
+    localStorage.setItem(STORE + "settings", JSON.stringify(settings));
+    setSaveState("Saved", true);
+  } catch (e) { settingsDirty = true; setSaveState("Couldn’t save"); }
+}
+
+// Read one saved month (or a blank one) into the editor.
+function loadMonth(key) {
+  month = emptyMonth();
+  if (canStore) {
+    try {
+      const raw = localStorage.getItem(STORE + "month." + key);
+      if (raw) {
+        const d = JSON.parse(raw);
+        month = { income: d.income ?? null, actuals: { ...(d.actuals || {}) }, invested: d.invested ?? null };
+      }
+    } catch (e) { /* corrupt entry — start blank */ }
+  }
+  syncInputs();
+  refresh();
+}
+
+function switchMonth(delta) {
+  flushMonthSave();                                  // don't lose edits
+  monthKey = shiftMonth(monthKey, delta);
+  loadMonth(monthKey);
+}
+
+// Gather every saved month, sorted by key (YYYY-MM sorts chronologically).
+function loadHistory() {
+  history = [];
+  if (canStore) {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(STORE + "month.")) continue;
+      try {
+        history.push({ id: k.slice((STORE + "month.").length), data: JSON.parse(localStorage.getItem(k)) });
+      } catch (e) { /* skip corrupt entries */ }
+    }
+    history.sort((a, b) => a.id.localeCompare(b.id));
+  }
+  renderHistory();
+}
+
+function connectStorage() {
+  if (!canStore) { $("storageNote").style.display = "block"; return; }
+  try {
+    const raw = localStorage.getItem(STORE + "settings");
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && Array.isArray(d.categories)) {
+        settings = { income: num(d.income), taxRate: d.taxRate == null ? 20 : num(d.taxRate),
+                     investGoal: num(d.investGoal) || 10000, categories: d.categories };
+        buildRows();
+      }
+    }
+  } catch (e) { /* keep defaults */ }
+  loadMonth(monthKey);
+  loadHistory();
+}
+
+/* =========================================================
+   4. Wire up static controls & go
+   ========================================================= */
+$("prevMonth").addEventListener("click", () => switchMonth(-1));
+$("nextMonth").addEventListener("click", () => switchMonth(1));
+
+$("monthIncome").addEventListener("input", (e) => {
+  month.income = e.target.value === "" ? null : num(e.target.value);
+  refresh();
+  scheduleMonthSave();
+});
+
+$("investInput").addEventListener("input", (e) => {
+  month.invested = e.target.value === "" ? null : num(e.target.value);
+  scheduleMonthSave();
+});
+$("investLeftover").addEventListener("click", () => {
+  const leftover = Math.max(leftoverNow(), 0);
+  month.invested = leftover;
+  $("investInput").value = leftover;
+  scheduleMonthSave();
+  setSaveState("Logged", true);
+});
+
+$("incomeInput").addEventListener("input", (e) => {
+  settings.income = num(e.target.value);
+  refresh();
+  scheduleSettingsSave();
+});
+
+$("taxRateInput").addEventListener("input", (e) => {
+  settings.taxRate = Math.min(num(e.target.value), 100);
+  refresh();
+  scheduleSettingsSave();
+});
+
+$("goalInput").addEventListener("input", (e) => {
+  settings.investGoal = num(e.target.value);
+  renderHistory();
+  scheduleSettingsSave();
+});
+
+$("settingsToggle").addEventListener("click", () => $("settings").classList.toggle("open"));
+
+$("addCat").addEventListener("click", () => {
+  const id = "cat-" + Math.random().toString(36).slice(2, 8);
+  settings.categories.push({ id, name: "New category", target: 0, perWeek: false });
+  scheduleSettingsSave();
+  buildRows();
+  $("settings").classList.add("open");
+});
+
+// Save anything pending if the page is being closed.
+window.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { flushMonthSave(); flushSettingsSave(); }
+});
+
+// Render immediately with defaults; storage lights up when it resolves.
+buildRows();
+renderHistory();
+connectStorage();
+</script>
+</body>
+</html>
